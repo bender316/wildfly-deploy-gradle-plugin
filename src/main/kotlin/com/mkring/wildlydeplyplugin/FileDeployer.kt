@@ -88,20 +88,28 @@ class FileDeployer(
 
             if (undeployBeforehand) {
                 log.info("undeploying existing deployment with same name if present...")
-                var deployments = blockingCmd("$deploymentInfoCmd $name", 2, ChronoUnit.MINUTES).response.get("result").asList()
-                var shouldUndeploy = if (domainMode) {
+                var cmd = blockingCmd("$deploymentInfoCmd $name", 2, ChronoUnit.MINUTES, false);
+                var response = cmd.response
+                // Check on error case if deployment is not present. Otherwise fail
+                if (cmd.isSuccess().not() && !response.get("failure-description").asString().contains("WFLYCTL0216")) {
+                    throw IllegalArgumentException(response.get("failure-description").asString())
+                } else if (cmd.isSuccess()) {
+                    var deployments = response.get("result").asList()
+                    var shouldUndeploy = if (domainMode) {
                     //TIP: deployment-info in domain mode has a different response data structure as following
                     // result => [ ("step-1") => { "result" => { "deployment.war" => ... }}, ("step-2") => ... ]
-                    (deployments.size > 0).and(deployments.first().asProperty().value.get("result").asList().any {
-                        it.asProperty().name == name.removePrefix("--name=") })
-                } else {
-                    //TIP: deployment-info in standalone mode has simplest response with "result" map only
-                    deployments.any { it.asProperty().name == name.removePrefix("--name=") }
-                }
-                log.debug("shouldUndeploy=$shouldUndeploy")
-                if (shouldUndeploy) {
-                    blockingCmd("$undeployCmd $name", 2, ChronoUnit.MINUTES).response.also {
-                        println("undeploy response: $it\n")
+                        (deployments.size > 0).and(deployments.first().asProperty().value.get("result").asList().any {
+                            it.asProperty().name == name.removePrefix("--name=")
+                        })
+                    } else {
+                        //TIP: deployment-info in standalone mode has simplest response with "result" map only
+                        deployments.any { it.asProperty().name == name.removePrefix("--name=") }
+                    }
+                    log.debug("shouldUndeploy=$shouldUndeploy")
+                    if (shouldUndeploy) {
+                        blockingCmd("$undeployCmd $name", 2, ChronoUnit.MINUTES, true).response.also {
+                            println("undeploy response: $it\n")
+                        }
                     }
                 }
             }
@@ -169,7 +177,7 @@ class FileDeployer(
     /**
      * hacky as hell but works
      */
-    private fun blockingCmd(s: String, i: Long, unit: ChronoUnit): CLI.Result {
+    private fun blockingCmd(s: String, i: Long, unit: ChronoUnit, failOnError: Boolean = true): CLI.Result {
         val end = LocalDateTime.now().plus(i, unit)
         while (LocalDateTime.now().isBefore(end)) {
             val cli = CLI.newInstance()
@@ -177,7 +185,7 @@ class FileDeployer(
                 connect(cli, host, port, user, password)
                 log.debug("executing cmd: $s")
                 val cmd = cli.cmd(s)
-                if (cmd.isSuccess.not()) {
+                if (failOnError && cmd.isSuccess.not()) {
                     throw IllegalStateException("no success")
                 }
                 return cmd
